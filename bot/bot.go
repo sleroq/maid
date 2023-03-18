@@ -74,7 +74,9 @@ func main() {
 	log := zerolog.New(zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
 		w.TimeFormat = time.Stamp
 	})).With().Timestamp().Logger()
-	if !cfg.Debug {
+	if cfg.Debug {
+		log = log.Level(zerolog.DebugLevel)
+	} else {
 		log = log.Level(zerolog.InfoLevel)
 	}
 
@@ -186,20 +188,24 @@ func main() {
 }
 
 type UserData struct {
-	Solution int
-	Expiry   int64
-	Tries    int
+	Solution   int
+	Expiry     int64
+	Tries      int
+	BotMessage id.EventID
 }
 type Chat struct {
 	Users map[string]*UserData
 }
 type Tests struct {
 	Chats map[string]*Chat
+	mu    sync.Mutex
 }
 
 var tests = new(Tests)
 
 func getUserData(data *Tests, roomID string, userID string) *UserData {
+	data.mu.Lock()
+	defer data.mu.Unlock()
 	m := data.Chats
 	if m == nil {
 		data.Chats = make(map[string]*Chat)
@@ -211,7 +217,7 @@ func getUserData(data *Tests, roomID string, userID string) *UserData {
 	_, ok = data.Chats[roomID].Users[userID]
 	if !ok {
 		expiry := time.Now().Add(time.Second * 30).Unix()
-		data.Chats[roomID].Users[userID] = &UserData{Solution: 0, Expiry: expiry, Tries: 0}
+		data.Chats[roomID].Users[userID] = &UserData{Solution: 0, Expiry: expiry, Tries: 0, BotMessage: ""}
 	}
 
 	return data.Chats[roomID].Users[userID]
@@ -222,13 +228,18 @@ func randInRange(min, max int) int {
 }
 
 func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log zerolog.Logger) error {
-	user, err := saveOrGetUser(evt.Sender.String(), false, db)
+	user, err := saveOrGetUser(evt.Sender.String(), evt.RoomID.String(), false, db)
 	if err != nil {
 		return fmt.Errorf("getting/saving joined user: %w", err)
 	}
 
 	longTimeAgo := time.Now().Add(-(TIME_TO_REMIND))
-	if !user.verified || user.lastJoin.Before(longTimeAgo) {
+
+	fmt.Println(longTimeAgo)
+	fmt.Println(user.lastJoin)
+	userData := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
+
+	if !user.verified && (user.lastJoin.Before(longTimeAgo) || userData.Solution == 0) {
 		task := ""
 		numbersLen := randInRange(2, 3)
 		answer := 0
@@ -243,22 +254,27 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 			task += strconv.Itoa(number)
 		}
 
-		uData := getUserData(tests, evt.RoomID.String(), user.id)
+		uData := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
+		tests.mu.Lock()
 		uData.Solution = answer
+		tests.mu.Unlock()
 
 		reply := fmt.Sprintf("Welcume, %s! Solve this to send messages:\n", user.id)
 		reply += fmt.Sprintf("Привет, %s! Реши эту штуку чтобы писать в чат:\n", user.id)
 		reply += fmt.Sprintf("%s", task)
-		_, err = client.SendNotice(evt.RoomID, reply)
+		res, err := client.SendNotice(evt.RoomID, reply)
 		if err != nil {
 			return fmt.Errorf("welcoming user: %w", err)
 		}
+		tests.mu.Lock()
+		uData.BotMessage = res.EventID
+		tests.mu.Unlock()
 
 		go func() {
 			time.Sleep(TIME_TO_SOLVE)
-			user, err = getUser(user.id, db)
+			user, err = getUser(evt.Sender.String(), evt.RoomID.String(), db)
 			if !user.verified {
-				_, err := client.KickUser(evt.RoomID, &mautrix.ReqKickUser{UserID: evt.Sender, Reason: "Did not solve math in time"})
+				_, err = client.KickUser(evt.RoomID, &mautrix.ReqKickUser{UserID: evt.Sender, Reason: "Did not solve math in time"})
 				if err != nil {
 					log.Error().Err(err).
 						Str("user", user.id).
@@ -272,7 +288,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 }
 
 func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
-	user, err := getUser(evt.Sender.String(), db)
+	user, err := getUser(evt.Sender.String(), evt.RoomID.String(), db)
 	if err == notFound {
 		return nil
 	}
@@ -282,7 +298,7 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
 
 	message := evt.Content.AsMessage()
 	if !user.verified {
-		data := getUserData(tests, evt.RoomID.String(), user.id)
+		data := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
 
 		if userIsRight(message, data.Solution) {
 			user.verified = true
@@ -314,7 +330,10 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
 					return fmt.Errorf("kicking user: %w", err)
 				}
 
-				data.Tries = 0
+				go func() {
+					time.Sleep(time.Second * 5)
+					data.Tries = 0
+				}()
 			}
 		}
 
@@ -358,11 +377,11 @@ type User struct {
 
 var notFound = errors.New("not found")
 
-func getUser(userID string, db *sql.DB) (*User, error) {
+func getUser(userID string, roomID string, db *sql.DB) (*User, error) {
 	row := db.QueryRow(
 		`select * from users
 		 where id = :id`,
-		userID,
+		userID+roomID,
 	)
 	user := new(User)
 	err := row.Scan(&user.id, &user.verified, &user.muted, &user.lastJoin)
@@ -378,14 +397,14 @@ func getUser(userID string, db *sql.DB) (*User, error) {
 	return user, nil
 }
 
-func saveOrGetUser(userID string, verified bool, db *sql.DB) (*User, error) {
-	user, err := getUser(userID, db)
+func saveOrGetUser(userID, roomID string, verified bool, db *sql.DB) (*User, error) {
+	user, err := getUser(userID, roomID, db)
 	if err == notFound {
 		user = &User{id: userID, verified: verified, muted: false, lastJoin: time.Now()}
 		_, err = db.Exec(
 			`insert into users (id, verified, muted, last_join)
              values (:id, :verified, :muted, :lastJoin)`,
-			user.id, user.verified, user.muted, user.lastJoin,
+			user.id+roomID, user.verified, user.muted, user.lastJoin,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("saving new user: %w", err)
