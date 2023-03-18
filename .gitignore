@@ -1,4 +1,5 @@
 /dist/
 /scripts/env.sh
 /sl-maid.db
+/.crypto.db
 /.idea/
