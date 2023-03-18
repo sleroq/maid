@@ -259,8 +259,8 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 		uData.Solution = answer
 		tests.mu.Unlock()
 
-		reply := fmt.Sprintf("Welcume, %s! Solve this to send messages:\n", user.id)
-		reply += fmt.Sprintf("Привет, %s! Реши эту штуку чтобы писать в чат:\n", user.id)
+		reply := fmt.Sprintf("Welcume, %s! Solve this to send messages:\n", evt.Sender.String())
+		reply += fmt.Sprintf("Привет, %s! Реши эту штуку чтобы писать в чат:\n", evt.Sender.String())
 		reply += fmt.Sprintf("%s", task)
 		res, err := client.SendNotice(evt.RoomID, reply)
 		if err != nil {
