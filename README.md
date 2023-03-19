@@ -32,10 +32,10 @@ After=network.target
 [Service]
 RestartSec=2s
 Type=simple
-User=filleron
-Group=filleron
-WorkingDirectory=/home/filleron/projects/maid/
-ExecStart=/home/filleron/projects/maid/scripts/run.bash
+User=username
+Group=username
+WorkingDirectory=/path/to/repo/maid/
+ExecStart=/path/to/repo/maid/scripts/run.bash
 Restart=always
 LimitNOFILE=65535
 
