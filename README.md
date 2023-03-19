@@ -37,7 +37,6 @@ Group=username
 WorkingDirectory=/path/to/repo/maid/
 ExecStart=/path/to/repo/maid/scripts/run.bash
 Restart=always
-LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
