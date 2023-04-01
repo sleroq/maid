@@ -100,7 +100,7 @@ func main() {
 			Str("body", evt.Content.AsMessage().Body).
 			Msg("Received message")
 
-		err = handleMessage(evt, client, db)
+		err = handleMessage(evt, client, db, log)
 		if err != nil {
 			log.Error().Err(err).
 				Str("room_id", evt.RoomID.String()).
@@ -287,7 +287,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 	return nil
 }
 
-func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
+func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB, log zerolog.Logger) error {
 	user, err := getUser(evt.Sender.String(), evt.RoomID.String(), db)
 	if err == notFound {
 		return nil
@@ -311,6 +311,15 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
 			if err != nil {
 				return fmt.Errorf("reacting to user message: %w", err)
 			}
+
+			go func() {
+				time.Sleep(time.Minute)
+
+				err = redactEvents(client, evt.RoomID, evt.ID, data.BotMessage)
+				if err != nil {
+					log.Error().Err(err)
+				}
+			}()
 
 			return nil
 		} else {
@@ -340,6 +349,17 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB) error {
 		_, err = client.RedactEvent(evt.RoomID, evt.ID)
 		if err == notFound {
 			return fmt.Errorf("deleting message: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func redactEvents(client *mautrix.Client, roomID id.RoomID, events ...id.EventID) (err error) {
+	for _, eventID := range events {
+		_, err = client.RedactEvent(roomID, eventID)
+		if err != nil {
+			return fmt.Errorf("redacting event: %w", err)
 		}
 	}
 
