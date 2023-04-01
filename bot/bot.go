@@ -245,7 +245,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 		answer := 0
 
 		for i := 0; i < numbersLen; i++ {
-			number := randInRange(-50, 50)
+			number := randInRange(0, 50)
 			answer += number
 
 			if i > 0 && number >= 0 {
