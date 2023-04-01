@@ -31,7 +31,7 @@ var database = "sl-maid.db"
 var cryptoDatabase = "crypto.db"
 
 const TIME_TO_SOLVE = time.Minute * 5
-const TIME_TO_REMIND = time.Hour * 6
+const TIME_TO_REMIND = time.Hour
 
 func initDB(location string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", location)
