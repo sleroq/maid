@@ -4,7 +4,6 @@ go 1.19
 
 require (
 	github.com/caarlos0/env/v6 v6.10.1
-	github.com/chzyer/readline v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/rs/zerolog v1.29.0
 	maunium.net/go/mautrix v0.15.0
@@ -17,6 +16,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/yuin/goldmark v1.5.4 // indirect
 	golang.org/x/crypto v0.6.0 // indirect
 	golang.org/x/net v0.6.0 // indirect
 	golang.org/x/sys v0.5.0 // indirect
