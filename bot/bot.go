@@ -280,8 +280,8 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, l
 				return
 			}
 			log.Info().
-				Bool("user", user.Verified).
-				Msg("Checking if user solved the challenge")
+				Bool("isVerified", user.Verified).
+				Msg("Checking if user solved the challenge in time")
 
 			if err == database.NotFound || !user.Verified {
 				// This can fail if the user left the room or already got kicked
