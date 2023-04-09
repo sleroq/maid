@@ -70,22 +70,24 @@ func main() {
 
 	syncer := client.Syncer.(*mautrix.DefaultSyncer)
 	syncer.OnEventType(event.EventMessage, func(source mautrix.EventSource, evt *event.Event) {
+		// Ignore events from bridges
 		if strings.HasPrefix(evt.Sender.String(), "@telegram_") ||
 			strings.HasPrefix(evt.Sender.String(), "@discord_") ||
 			strings.HasPrefix(evt.Sender.String(), "@_xmpp_") {
 			return
 		}
+
+		if evt.Timestamp < time.Now().Add(-time.Hour).UnixMilli() {
+			log.Info().Msg("Ignoring too old event")
+			return
+		}
+
 		log.Info().
 			Str("sender", evt.Sender.String()).
 			Str("type", evt.Type.String()).
 			Str("id", evt.ID.String()).
 			Str("body", evt.Content.AsMessage().Body).
 			Msg("Received message")
-
-		if evt.Timestamp < time.Now().Add(-time.Hour).UnixMilli() {
-			log.Info().Msg("Ignoring too old event")
-			return
-		}
 
 		err = handleMessage(evt, client, db, log)
 		if err != nil {
@@ -97,11 +99,14 @@ func main() {
 
 		message := evt.Content.AsMessage().Body
 		if strings.HasPrefix(message, "!maid") || strings.HasPrefix(message, "!help") || strings.HasPrefix(message, "!sl-maid") {
-
-			userData := store.GetUserData(evt.RoomID.String(), evt.Sender.String())
+			user, err := db.GetUser(evt.Sender.String(), evt.RoomID.String())
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to get user")
+				return
+			}
 
 			// Check if this is a new unverified user with challenge
-			if !userData.Verified && userData.Challenge.TaskMessageID != "" {
+			if !user.Verified {
 				return
 			}
 
