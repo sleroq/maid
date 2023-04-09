@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"time"
 )
 
@@ -52,7 +53,7 @@ func (db *DB) GetUser(userID string, roomID string) (User, error) {
 		 where id = :id`,
 		userID+roomID,
 	)
-	user := new(User)
+	user := User{}
 	err := row.Scan(&user.Id, &user.Verified, &user.Muted, &user.LastJoin)
 
 	if err == sql.ErrNoRows {
@@ -63,7 +64,7 @@ func (db *DB) GetUser(userID string, roomID string) (User, error) {
 		return User{}, fmt.Errorf("scanning user: %w", err)
 	}
 
-	return User{}, nil
+	return user, nil
 }
 
 // VerifyUser adds or updates user in database as verified
