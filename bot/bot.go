@@ -82,7 +82,7 @@ func main() {
 			Str("body", evt.Content.AsMessage().Body).
 			Msg("Received message")
 
-		if evt.Timestamp < time.Now().Add(-time.Hour).Unix() {
+		if evt.Timestamp < time.Now().Add(-time.Hour).UnixMilli() {
 			log.Info().Msg("Ignoring too old event")
 			return
 		}
@@ -128,6 +128,8 @@ func main() {
 			if evt.Content.AsMember().Membership == event.MembershipInvite {
 				_, err := client.JoinRoomByID(evt.RoomID)
 				if err == nil {
+					store.UpdateJoinedAt(evt.RoomID.String(), time.Now())
+
 					log.Info().
 						Str("room_id", evt.RoomID.String()).
 						Str("inviter", evt.Sender.String()).
@@ -143,17 +145,23 @@ func main() {
 		}
 
 		if evt.Content.AsMember().Membership == event.MembershipJoin {
-			err = welcomeNewUser(evt, client, db, log)
-			if err != nil {
-				log.Error().Err(err).
-					Str("room_id", evt.RoomID.String()).
-					Str("userID", evt.Sender.String()).
-					Msg("Failed to welcome user")
+			// Welcome new users, if 30 seconds have passed since we joined the room
+			// Because otherwise we will send a welcome message to users, already in the room
+			if store.GetJoinedAt(evt.RoomID.String()).Before(time.Now().Add(-time.Second * 30)) {
+				err = welcomeNewUser(evt, client, db, log)
+				if err != nil {
+					log.Error().Err(err).
+						Str("room_id", evt.RoomID.String()).
+						Str("userID", evt.Sender.String()).
+						Msg("Failed to welcome user")
+				} else {
+					log.Info().
+						Str("room_id", evt.RoomID.String()).
+						Str("userID", evt.Sender.String()).
+						Msg("User just joined")
+				}
 			} else {
-				log.Info().
-					Str("room_id", evt.RoomID.String()).
-					Str("userID", evt.Sender.String()).
-					Msg("User just joined")
+				log.Info().Msg("Ignoring user join event, because we just joined the room")
 			}
 		}
 	})
