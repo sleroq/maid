@@ -22,7 +22,7 @@ func TestFastStore_GetUserData_GetNotExisting(t *testing.T) {
 	}
 }
 
-// Expected to receive empty UserData
+// Expected to update UserData and receive updated
 func TestFastStore_UpdateUserData(t *testing.T) {
 	store := fastore.FastStore{}
 	data := store.GetUserData("room", "user")
