@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/sleroq/maid/bot/store"
 	"math/rand"
+	"maunium.net/go/mautrix/format"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/caarlos0/env/v6"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog"
+	"github.com/sleroq/maid/bot/database"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
@@ -27,32 +29,12 @@ type config struct {
 	Debug    bool      `env:"DEBUG"`
 }
 
-var database = "sl-maid.db"
-var cryptoDatabase = "crypto.db"
+var databaseFileName = "sl-maid.db"
+var cryptoDatabaseFileName = "crypto.db"
 
-const TIME_TO_SOLVE = time.Minute * 5
-const TIME_TO_REMIND = time.Hour
+const TimeToSolve = time.Minute * 1
 
-func initDB(location string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", location)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = db.Exec(
-		`create table if not exists users (
-                 id text not null primary key,
-                 verified integer not null,
-                 muted integer not null,
-                 last_join timestamp not null
-             );`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("создание таблицы пользователей: %w", err)
-	}
-
-	return db, nil
-}
+var store = new(fastore.FastStore)
 
 func main() {
 	cfg := config{}
@@ -66,7 +48,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := initDB(database)
+	db, err := database.New(databaseFileName)
 	if err != nil {
 		panic(fmt.Errorf("initializing database: %w", err))
 	}
@@ -100,12 +82,39 @@ func main() {
 			Str("body", evt.Content.AsMessage().Body).
 			Msg("Received message")
 
+		if evt.Timestamp < time.Now().Add(-time.Hour).Unix() {
+			log.Info().Msg("Ignoring too old event")
+			return
+		}
+
 		err = handleMessage(evt, client, db, log)
 		if err != nil {
 			log.Error().Err(err).
 				Str("room_id", evt.RoomID.String()).
 				Str("userID", evt.Sender.String()).
 				Msg("Failed to process message")
+		}
+
+		message := evt.Content.AsMessage().Body
+		if strings.HasPrefix(message, "!maid") || strings.HasPrefix(message, "!help") || strings.HasPrefix(message, "!sl-maid") {
+
+			userData := store.GetUserData(evt.RoomID.String(), evt.Sender.String())
+
+			// Check if this is a new unverified user with challenge
+			if !userData.Verified && userData.Challenge.TaskMessageID != "" {
+				return
+			}
+
+			helpMessage := "Hello! I'm a bot that helps you to verify that you are a human. " +
+				"I do not have any special commands yet"
+
+			_, err = client.SendNotice(evt.RoomID, helpMessage)
+			if err != nil {
+				log.Error().Err(err).
+					Str("room_id", evt.RoomID.String()).
+					Str("userID", evt.Sender.String()).
+					Msg("Failed to send help message")
+			}
 		}
 	})
 	syncer.OnEventType(event.StateMember, func(source mautrix.EventSource, evt *event.Event) {
@@ -149,7 +158,7 @@ func main() {
 		}
 	})
 
-	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("meow"), cryptoDatabase)
+	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("meow"), cryptoDatabaseFileName)
 	if err != nil {
 		panic(err)
 	}
@@ -187,97 +196,88 @@ func main() {
 	}
 }
 
-type UserData struct {
-	Solution   int
-	Expiry     int64
-	Tries      int
-	BotMessage id.EventID
-}
-type Chat struct {
-	Users map[string]*UserData
-}
-type Tests struct {
-	Chats map[string]*Chat
-	mu    sync.Mutex
-}
-
-var tests = new(Tests)
-
-func getUserData(data *Tests, roomID string, userID string) *UserData {
-	data.mu.Lock()
-	defer data.mu.Unlock()
-	m := data.Chats
-	if m == nil {
-		data.Chats = make(map[string]*Chat)
-	}
-	_, ok := data.Chats[roomID]
-	if !ok {
-		data.Chats[roomID] = &Chat{Users: map[string]*UserData{}}
-	}
-	_, ok = data.Chats[roomID].Users[userID]
-	if !ok {
-		expiry := time.Now().Add(time.Second * 30).Unix()
-		data.Chats[roomID].Users[userID] = &UserData{Solution: 0, Expiry: expiry, Tries: 0, BotMessage: ""}
-	}
-
-	return data.Chats[roomID].Users[userID]
-}
-
 func randInRange(min, max int) int {
 	return rand.Intn(max-min) + min
 }
 
-func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log zerolog.Logger) error {
-	user, err := saveOrGetUser(evt.Sender.String(), evt.RoomID.String(), false, db)
-	if err != nil {
-		return fmt.Errorf("getting/saving joined user: %w", err)
+// createChallenge creates a new challenge for the user
+// challenge is solving math with a random numbers between 1 and 50
+func createChallenge() fastore.Challenge {
+	op := randInRange(0, 2)
+	a := randInRange(1, 50)
+	b := randInRange(1, 50)
+	var res int
+	var challenge string
+	switch op {
+	case 0:
+		challenge = fmt.Sprintf("%d + %d = ?", a, b)
+		res = a + b
+	case 1:
+		challenge = fmt.Sprintf("%d - %d = ?", a, b)
+		res = a - b
+	case 2:
+		challenge = fmt.Sprintf("%d * %d = ?", a, b)
+		res = a * b
+	}
+	return fastore.Challenge{
+		Challenge: challenge,
+		Solution:  res,
+		Expiry:    time.Now().Add(TimeToSolve),
+	}
+}
+
+func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, log zerolog.Logger) error {
+	user, err := db.GetUser(evt.RoomID.String(), evt.Sender.String())
+	if err != nil && err != database.NotFound {
+		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	longTimeAgo := time.Now().Add(-(TIME_TO_REMIND))
-
-	fmt.Println(longTimeAgo)
-	fmt.Println(user.lastJoin)
-	userData := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
-
-	if !user.verified && (user.lastJoin.Before(longTimeAgo) || userData.Solution == 0) {
-		task := ""
-		numbersLen := randInRange(2, 3)
-		answer := 0
-
-		for i := 0; i < numbersLen; i++ {
-			number := randInRange(0, 50)
-			answer += number
-
-			if i > 0 && number >= 0 {
-				task += " + "
-			}
-			task += strconv.Itoa(number)
-		}
-
-		uData := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
-		tests.mu.Lock()
-		uData.Solution = answer
-		tests.mu.Unlock()
-
-		reply := fmt.Sprintf("Welcume, %s! Solve this to send messages:\n", evt.Sender.String())
-		reply += fmt.Sprintf("Привет, %s! Реши эту штуку чтобы писать в чат:\n", evt.Sender.String())
-		reply += fmt.Sprintf("%s", task)
-		res, err := client.SendNotice(evt.RoomID, reply)
+	if err != database.NotFound && user.Verified {
+		_, err := client.SendNotice(evt.RoomID, "Welcome back, "+evt.Sender.String()+"!")
 		if err != nil {
-			return fmt.Errorf("welcoming user: %w", err)
+			return fmt.Errorf("failed to send welcome message: %w", err)
 		}
-		tests.mu.Lock()
-		uData.BotMessage = res.EventID
-		tests.mu.Unlock()
+	}
 
+	userData := store.GetUserData(evt.RoomID.String(), evt.Sender.String())
+
+	// If the user does not have a valid challenge, send a new one
+	if userData.Challenge.TaskMessageID == "" || userData.Challenge.Expiry.Before(time.Now()) {
+		challenge := createChallenge()
+
+		welcomeMessage := fmt.Sprintf("Welcome, %s ! Please solve the following challenge to send messages:\n", evt.Sender.String()) +
+			fmt.Sprintf("Добро пожаловать, %s ! Пожалуйста, решите следующее уравнение, чтобы отправлять сообщения:\n", evt.Sender.String()) +
+			fmt.Sprintf("```%s```", challenge.Challenge)
+
+		content := format.RenderMarkdown(welcomeMessage, true, false)
+		challengeEvent, err := client.SendMessageEvent(evt.RoomID, event.EventMessage, &content)
+		// Somehow this is possible, so we need to check for nil
+		if challengeEvent == nil {
+			return fmt.Errorf("failed to send challenge, because replyEvent is nil")
+		}
+
+		challenge.TaskMessageID = challengeEvent.EventID
+
+		userData.Challenge = challenge
+		store.UpdateUserData(evt.RoomID.String(), evt.Sender.String(), userData)
+
+		// Kick the user if they don't solve the challenge in time
 		go func() {
-			time.Sleep(TIME_TO_SOLVE)
-			user, err = getUser(evt.Sender.String(), evt.RoomID.String(), db)
-			if !user.verified {
+			time.Sleep(challenge.Expiry.Sub(time.Now()))
+			user, err = db.GetUser(evt.RoomID.String(), evt.Sender.String())
+			if err != nil && err != database.NotFound {
+				log.Error().Err(err).
+					Msg("Failed to get user from database")
+				return
+			}
+			log.Info().
+				Bool("user", user.Verified).
+				Msg("Checking if user solved the challenge")
+
+			if err == database.NotFound || !user.Verified {
 				_, err = client.KickUser(evt.RoomID, &mautrix.ReqKickUser{UserID: evt.Sender, Reason: "Did not solve math in time"})
 				if err != nil {
 					log.Error().Err(err).
-						Str("user", user.id).
 						Msg("Failed to kick the user")
 				}
 			}
@@ -287,24 +287,21 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *sql.DB, log ze
 	return nil
 }
 
-func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB, log zerolog.Logger) error {
-	user, err := getUser(evt.Sender.String(), evt.RoomID.String(), db)
-	if err == notFound {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting user: %w", err)
-	}
-
+func handleMessage(evt *event.Event, client *mautrix.Client, db *database.DB, log zerolog.Logger) error {
 	message := evt.Content.AsMessage()
-	if !user.verified {
-		data := getUserData(tests, evt.RoomID.String(), evt.Sender.String())
 
-		if userIsRight(message, data.Solution) {
-			user.verified = true
-			err = updateUser(user, db)
+	// Handle unverified users without looking up database
+	userData := store.GetUserData(evt.RoomID.String(), evt.Sender.String())
+
+	// Check if this is a new unverified user with challenge
+	if !userData.Verified && userData.Challenge.TaskMessageID != "" {
+		if userIsRight(message, userData.Challenge.Solution) {
+			userData.Verified = true
+			store.UpdateUserData(evt.RoomID.String(), evt.Sender.String(), userData)
+
+			err := db.VerifyUser(evt.Sender.String(), evt.RoomID.String())
 			if err != nil {
-				return fmt.Errorf("updating user: %w", err)
+				return fmt.Errorf("adding verified user: %w", err)
 			}
 
 			_, err = client.SendReaction(evt.RoomID, evt.ID, "👍️")
@@ -312,10 +309,11 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB, log zer
 				return fmt.Errorf("reacting to user message: %w", err)
 			}
 
+			// Delete messages after 1 minute
 			go func() {
 				time.Sleep(time.Minute)
 
-				err = redactEvents(client, evt.RoomID, evt.ID, data.BotMessage)
+				err = deleteEvents(client, evt.RoomID, evt.ID, userData.Challenge.TaskMessageID)
 				if err != nil {
 					log.Error().Err(err)
 				}
@@ -323,39 +321,34 @@ func handleMessage(evt *event.Event, client *mautrix.Client, db *sql.DB, log zer
 
 			return nil
 		} else {
-			data.Tries++
-			if data.Tries > 2 {
-				_, err = client.RedactEvent(evt.RoomID, evt.ID)
-				if err == notFound {
-					return fmt.Errorf("deleting message: %s", err)
-				}
+			// Deleting wrong answers ASAP
+			_, err := client.RedactEvent(evt.RoomID, evt.ID)
+			if err != nil {
+				return fmt.Errorf("deleting message: %w", err)
+			}
 
-				_, err = client.KickUser(evt.RoomID, &mautrix.ReqKickUser{
+			// If user failed to solve the challenge 3 times in a row - kick them
+			// but do not reset the challenge and do not delete the task message
+			// so user can't spam it by rejoining
+
+			userData.Challenge.Tries++
+			store.UpdateUserData(evt.RoomID.String(), evt.Sender.String(), userData)
+			if userData.Challenge.Tries > 2 {
+				_, err := client.KickUser(evt.RoomID, &mautrix.ReqKickUser{
 					Reason: "Stupid?",
 					UserID: evt.Sender,
 				})
-
 				if err != nil {
 					return fmt.Errorf("kicking user: %w", err)
 				}
-
-				go func() {
-					time.Sleep(time.Second * 5)
-					data.Tries = 0
-				}()
 			}
-		}
-
-		_, err = client.RedactEvent(evt.RoomID, evt.ID)
-		if err == notFound {
-			return fmt.Errorf("deleting message: %s", err)
 		}
 	}
 
 	return nil
 }
 
-func redactEvents(client *mautrix.Client, roomID id.RoomID, events ...id.EventID) (err error) {
+func deleteEvents(client *mautrix.Client, roomID id.RoomID, events ...id.EventID) (err error) {
 	for _, eventID := range events {
 		_, err = client.RedactEvent(roomID, eventID)
 		if err != nil {
@@ -386,71 +379,4 @@ func userIsRight(message *event.MessageEventContent, correctAnswer int) bool {
 	} else {
 		return false
 	}
-}
-
-type User struct {
-	id       string
-	verified bool
-	muted    bool
-	lastJoin time.Time
-}
-
-var notFound = errors.New("not found")
-
-func getUser(userID string, roomID string, db *sql.DB) (*User, error) {
-	row := db.QueryRow(
-		`select * from users
-		 where id = :id`,
-		userID+roomID,
-	)
-	user := new(User)
-	err := row.Scan(&user.id, &user.verified, &user.muted, &user.lastJoin)
-
-	if err == sql.ErrNoRows {
-		return nil, notFound
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("scanning user: %w", err)
-	}
-
-	return user, nil
-}
-
-func saveOrGetUser(userID, roomID string, verified bool, db *sql.DB) (*User, error) {
-	user, err := getUser(userID, roomID, db)
-	if err == notFound {
-		user = &User{id: userID, verified: verified, muted: false, lastJoin: time.Now()}
-		_, err = db.Exec(
-			`insert into users (id, verified, muted, last_join)
-             values (:id, :verified, :muted, :lastJoin)`,
-			user.id+roomID, user.verified, user.muted, user.lastJoin,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("saving new user: %w", err)
-		}
-		err = nil
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("getting user: %w", err)
-	}
-
-	return user, nil
-}
-
-func updateUser(user *User, db *sql.DB) error {
-	_, err := db.Exec(
-		`update users 
-    	 set verified = :verified, muted = :muted, last_join = :lastJoin
-         where id = :id`,
-		user.verified, user.muted, user.lastJoin,
-		user.id,
-	)
-
-	if err != nil {
-		return fmt.Errorf("updating user: %w", err)
-	}
-
-	return nil
 }
