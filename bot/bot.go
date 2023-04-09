@@ -272,7 +272,8 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, l
 		// Kick the user if they don't solve the challenge in time
 		go func() {
 			time.Sleep(challenge.Expiry.Sub(time.Now()))
-			user, err = db.GetUser(evt.RoomID.String(), evt.Sender.String())
+
+			user, err = db.GetUser(evt.Sender.String(), evt.RoomID.String())
 			if err != nil && err != database.NotFound {
 				log.Error().Err(err).
 					Msg("Failed to get user from database")
@@ -283,6 +284,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, l
 				Msg("Checking if user solved the challenge")
 
 			if err == database.NotFound || !user.Verified {
+				// This can fail if the user left the room or already got kicked
 				_, err = client.KickUser(evt.RoomID, &mautrix.ReqKickUser{UserID: evt.Sender, Reason: "Did not solve math in time"})
 				if err != nil {
 					log.Error().Err(err).
