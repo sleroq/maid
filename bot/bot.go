@@ -24,15 +24,14 @@ import (
 )
 
 type config struct {
-	UserID   id.UserID `env:"MATRIX_IDENTIFIER,notEmpty"`
-	Password string    `env:"MATRIX_PASSWORD,notEmpty"`
-	Debug    bool      `env:"DEBUG"`
+	UserID      id.UserID `env:"MATRIX_IDENTIFIER,notEmpty"`
+	Password    string    `env:"MATRIX_PASSWORD,notEmpty"`
+	Debug       bool      `env:"DEBUG"`
+	TimeToSolve int       `env:"TIME_TO_SOLVE, envDefault:10"`
 }
 
 var databaseFileName = "sl-maid.db"
 var cryptoDatabaseFileName = "crypto.db"
-
-const TimeToSolve = time.Minute * 1
 
 var store = new(fastore.FastStore)
 
@@ -153,7 +152,7 @@ func main() {
 			// Welcome new users, if 30 seconds have passed since we joined the room
 			// Because otherwise we will send a welcome message to users, already in the room
 			if store.GetJoinedAt(evt.RoomID.String()).Before(time.Now().Add(-time.Second * 30)) {
-				err = welcomeNewUser(evt, client, db, log)
+				err = welcomeNewUser(evt, client, cfg.TimeToSolve, db, log)
 				if err != nil {
 					log.Error().Err(err).
 						Str("room_id", evt.RoomID.String()).
@@ -215,7 +214,7 @@ func randInRange(min, max int) int {
 
 // createChallenge creates a new challenge for the user
 // challenge is solving math with a random numbers between 1 and 50
-func createChallenge() fastore.Challenge {
+func createChallenge(timeToSolve int) fastore.Challenge {
 	op := randInRange(0, 2)
 	a := randInRange(1, 50)
 	b := randInRange(1, 50)
@@ -235,11 +234,11 @@ func createChallenge() fastore.Challenge {
 	return fastore.Challenge{
 		Challenge: challenge,
 		Solution:  res,
-		Expiry:    time.Now().Add(TimeToSolve),
+		Expiry:    time.Now().Add(time.Minute * time.Duration(timeToSolve)),
 	}
 }
 
-func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, log zerolog.Logger) error {
+func welcomeNewUser(evt *event.Event, client *mautrix.Client, timeToSolve int, db *database.DB, log zerolog.Logger) error {
 	user, err := db.GetUser(evt.RoomID.String(), evt.Sender.String())
 	if err != nil && err != database.NotFound {
 		return fmt.Errorf("failed to get user: %w", err)
@@ -256,7 +255,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, l
 
 	// If the user does not have a valid challenge, send a new one
 	if userData.Challenge.TaskMessageID == "" || userData.Challenge.Expiry.Before(time.Now()) {
-		challenge := createChallenge()
+		challenge := createChallenge(timeToSolve)
 
 		welcomeMessage := fmt.Sprintf("Welcome, %s ! Please solve the following challenge to send messages:\n", evt.Sender.String()) +
 			fmt.Sprintf("Добро пожаловать, %s ! Пожалуйста, решите следующее уравнение, чтобы отправлять сообщения:\n", evt.Sender.String()) +
@@ -294,6 +293,12 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, db *database.DB, l
 				if err != nil {
 					log.Error().Err(err).
 						Msg("Failed to kick the user")
+				}
+
+				_, err := client.RedactEvent(evt.RoomID, challenge.TaskMessageID)
+				if err != nil {
+					log.Error().Err(err).
+						Msg("Failed to remove challenge message")
 				}
 			}
 		}()
