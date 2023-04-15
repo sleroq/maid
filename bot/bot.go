@@ -27,7 +27,7 @@ type config struct {
 	UserID      id.UserID `env:"MATRIX_IDENTIFIER,notEmpty"`
 	Password    string    `env:"MATRIX_PASSWORD,notEmpty"`
 	Debug       bool      `env:"DEBUG"`
-	TimeToSolve int       `env:"TIME_TO_SOLVE, envDefault:10"`
+	TimeToSolve int       `env:"TIME_TO_SOLVE" envDefault:"10"`
 }
 
 var databaseFileName = "sl-maid.db"
