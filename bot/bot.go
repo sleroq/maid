@@ -257,8 +257,8 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, timeToSolve int, d
 	if userData.Challenge.TaskMessageID == "" || userData.Challenge.Expiry.Before(time.Now()) {
 		challenge := createChallenge(timeToSolve)
 
-		welcomeMessage := fmt.Sprintf("Welcome, %s ! Please solve the following challenge to send messages:\n", evt.Sender.String()) +
-			fmt.Sprintf("Добро пожаловать, %s ! Пожалуйста, решите следующее уравнение, чтобы отправлять сообщения:\n", evt.Sender.String()) +
+		welcomeMessage := fmt.Sprintf("Welcome, %s ! Please solve the following challenge to stay in the room:\n", evt.Sender.String()) +
+			fmt.Sprintf("Добро пожаловать, %s ! Пожалуйста, решите следующее уравнение, чтобы вас не кикнул бот:\n", evt.Sender.String()) +
 			fmt.Sprintf("```%s```", challenge.Challenge)
 
 		content := format.RenderMarkdown(welcomeMessage, true, false)
