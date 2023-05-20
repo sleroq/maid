@@ -1,5 +1,5 @@
 /dist/
-/scripts/env.sh
+/scripts/env.*sh
 /sl-maid.db
 /crypto.db
 /.idea/
