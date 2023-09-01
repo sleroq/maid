@@ -32,11 +32,11 @@ func New(location string) (*DB, error) {
 
 	_, err = db.base.Exec(
 		`create table if not exists users (
-                 id text not null primary key,
-                 verified integer not null,
-                 muted integer not null,
-                 last_join timestamp not null
-             );`,
+             id text not null primary key,
+             verified integer not null,
+             muted integer not null,
+             last_join timestamp not null
+         );`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("создание таблицы пользователей: %w", err)
