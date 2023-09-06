@@ -308,11 +308,11 @@ func createChallenge(timeToSolve int) fastore.Challenge {
 
 func welcomeNewUser(evt *event.Event, client *mautrix.Client, timeToSolve int, db *database.DB, log zerolog.Logger) error {
 	user, err := db.GetUser(evt.RoomID.String(), evt.Sender.String())
-	if err != nil && err != database.NotFound {
+	if err != nil && !errors.Is(err, database.NotFound) {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if err != database.NotFound && user.Verified {
+	if !errors.Is(err, database.NotFound) && user.Verified {
 		_, err := client.SendNotice(evt.RoomID, "Welcome back, "+evt.Sender.String()+"!")
 		if err != nil {
 			return fmt.Errorf("failed to send welcome message: %w", err)
@@ -346,7 +346,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, timeToSolve int, d
 			time.Sleep(challenge.Expiry.Sub(time.Now()))
 
 			user, err = db.GetUser(evt.Sender.String(), evt.RoomID.String())
-			if err != nil && err != database.NotFound {
+			if err != nil && !errors.Is(err, database.NotFound) {
 				log.Error().Err(err).
 					Msg("Failed to get user from database")
 				return
@@ -355,7 +355,7 @@ func welcomeNewUser(evt *event.Event, client *mautrix.Client, timeToSolve int, d
 				Bool("isVerified", user.Verified).
 				Msg("Checking if user solved the challenge in time")
 
-			if err == database.NotFound || !user.Verified {
+			if errors.Is(err, database.NotFound) || !user.Verified {
 				// This can fail if the user left the room or already got kicked
 				_, err = client.KickUser(evt.RoomID, &mautrix.ReqKickUser{UserID: evt.Sender, Reason: "Did not solve math in time"})
 				if err != nil {
