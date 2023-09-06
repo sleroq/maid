@@ -24,10 +24,11 @@ import (
 )
 
 type config struct {
-	UserID      id.UserID `env:"MATRIX_IDENTIFIER,notEmpty"`
-	Password    string    `env:"MATRIX_PASSWORD,notEmpty"`
-	Debug       bool      `env:"DEBUG"`
-	TimeToSolve int       `env:"TIME_TO_SOLVE" envDefault:"10"`
+	UserID       id.UserID `env:"MATRIX_IDENTIFIER,notEmpty"`
+	Password     string    `env:"MATRIX_PASSWORD,notEmpty"`
+	Debug        bool      `env:"DEBUG"`
+	TimeToSolve  int       `env:"TIME_TO_SOLVE" envDefault:"10"`
+	IgnoredUsers []string  `env:"IGNORED_USERS" envSeparator:"\n"`
 }
 
 var databaseFileName = "sl-maid.db"
@@ -36,15 +37,9 @@ var cryptoDatabaseFileName = "crypto.db"
 var store = new(fastore.FastStore)
 
 func main() {
-	cfg := config{}
-	if err := env.Parse(&cfg); err != nil {
-		fmt.Printf("Error parsing config: %s", err)
-		os.Exit(1)
-	}
-
-	if cfg.UserID == "" || cfg.Password == "" {
-		fmt.Println("Required env not set")
-		os.Exit(1)
+	cfg, err := handleConfig()
+	if err != nil {
+		panic(fmt.Errorf("handling config: %w", err))
 	}
 
 	db, err := database.New(databaseFileName)
@@ -68,16 +63,17 @@ func main() {
 	client.Log = log
 
 	syncer := client.Syncer.(*mautrix.DefaultSyncer)
+
 	syncer.OnEventType(event.EventMessage, func(source mautrix.EventSource, evt *event.Event) {
-		// Ignore events from bridges
-		if strings.HasPrefix(evt.Sender.String(), "@telegram_") ||
-			strings.HasPrefix(evt.Sender.String(), "@discord_") ||
-			strings.HasPrefix(evt.Sender.String(), "@_xmpp_") {
-			return
+		shouldIgnore, err := checkIfShouldIgnore(evt, log, client, cfg.IgnoredUsers)
+		if err != nil {
+			log.Error().Err(err).
+				Str("room_id", evt.RoomID.String()).
+				Str("userID", evt.Sender.String()).
+				Msg("Failed to check if event should be ignored")
 		}
 
-		if evt.Timestamp < time.Now().Add(-time.Hour).UnixMilli() {
-			log.Info().Msg("Ignoring too old event")
+		if shouldIgnore {
 			return
 		}
 
@@ -121,12 +117,8 @@ func main() {
 			}
 		}
 	})
+
 	syncer.OnEventType(event.StateMember, func(source mautrix.EventSource, evt *event.Event) {
-		if strings.HasPrefix(evt.Sender.String(), "@telegram_") ||
-			strings.HasPrefix(evt.Sender.String(), "@discord_") ||
-			strings.HasPrefix(evt.Sender.String(), "@_xmpp_") {
-			return
-		}
 		if evt.GetStateKey() == client.UserID.String() {
 			// Join rooms on invite
 			if evt.Content.AsMember().Membership == event.MembershipInvite {
@@ -149,6 +141,17 @@ func main() {
 		}
 
 		if evt.Content.AsMember().Membership == event.MembershipJoin {
+			shouldIgnore, err := checkIfShouldIgnore(evt, log, client, cfg.IgnoredUsers)
+			if err != nil {
+				log.Error().Err(err).
+					Str("room_id", evt.RoomID.String()).
+					Str("userID", evt.Sender.String()).
+					Msg("Failed to check if event should be ignored")
+			}
+			if shouldIgnore {
+				return
+			}
+
 			// Welcome new users, if 30 seconds have passed since we joined the room
 			// Because otherwise we will send a welcome message to users, already in the room
 			if store.GetJoinedAt(evt.RoomID.String()).Before(time.Now().Add(-time.Second * 30)) {
@@ -181,7 +184,7 @@ func main() {
 		Password:   cfg.Password,
 	}
 	// If you want to use multiple clients with the same DB, you should set a distinct cryptoDatabase account ID for each one.
-	//cryptoHelper.DBAccountID = ""
+	// cryptoHelper.DBAccountID = ""
 	err = cryptoHelper.Init()
 	if err != nil {
 		panic(err)
@@ -206,6 +209,71 @@ func main() {
 	if err != nil {
 		log.Error().Err(err).Msg("Error closing cryptoDatabase")
 	}
+}
+
+func handleConfig() (config, error) {
+	cfg := config{}
+	if err := env.Parse(&cfg); err != nil {
+		return cfg, fmt.Errorf("parsing config: %w", err)
+	}
+
+	var ignoredPatterns []string
+	// Trim spaces from ignored users
+	for _, user := range cfg.IgnoredUsers {
+		regexPattern := strings.TrimSpace(user)
+
+		if regexPattern == "" {
+			continue
+		}
+
+		// Check if regexp is valid
+		_, err := regexp.Compile(regexPattern)
+		if err != nil {
+			return cfg, fmt.Errorf("parsing regexp for ignored user %s: %w", user, err)
+		}
+
+		ignoredPatterns = append(ignoredPatterns, regexPattern)
+	}
+	cfg.IgnoredUsers = ignoredPatterns
+
+	if cfg.UserID == "" || cfg.Password == "" {
+		return cfg, fmt.Errorf("required env not set")
+	}
+
+	return cfg, nil
+}
+
+func checkIfShouldIgnore(evt *event.Event, log zerolog.Logger, client *mautrix.Client, ignoredUsers []string) (bool, error) {
+	// Filter out old events
+	if evt.Timestamp < time.Now().Add(-time.Hour).UnixMilli() {
+		log.Info().Msg("Ignoring too old event")
+		return true, nil
+	}
+
+	// Get room permissions
+	powerLevels := client.StateStore.GetPowerLevels(evt.RoomID)
+	if powerLevels == nil {
+		return false, fmt.Errorf("failed to get power levels for room %s", evt.RoomID)
+	}
+
+	// Ignore admins
+	if powerLevels.Users[evt.Sender] >= 50 {
+		log.Info().Msg("User is admin, ignoring")
+		return true, nil
+	}
+
+	for _, ignoredUser := range ignoredUsers {
+		match, err := regexp.Match(ignoredUser, []byte(evt.Sender.String()))
+		if err != nil {
+			return false, fmt.Errorf("failed to match regex: %w", err)
+		}
+		if match {
+			log.Info().Msg("Ignoring event from ignored user " + evt.Sender.String() + " because of " + ignoredUser)
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func randInRange(min, max int) int {
