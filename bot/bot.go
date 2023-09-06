@@ -7,7 +7,7 @@ import (
 	"github.com/sleroq/maid/bot/store"
 	"math/rand"
 	"maunium.net/go/mautrix/format"
-	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -448,16 +448,13 @@ func deleteEvents(client *mautrix.Client, roomID id.RoomID, events ...id.EventID
 }
 
 func userIsRight(message *event.MessageEventContent, correctAnswer int) bool {
-	answer := ""
-	if len(message.FormattedBody) > 0 {
-		parts := strings.Split(message.FormattedBody, "</mx-reply>")
-		answer = strings.TrimSpace(parts[len(parts)-1])
-	}
-	if answer == "" {
-		answer = strings.TrimSpace(message.Body)
+	answerMatchPattern := regexp.MustCompile(`[-+]?[0-9]+`)
+	answer := answerMatchPattern.FindAllString(message.Body, -1)
+	if len(answer) == 0 {
+		return false
 	}
 
-	userAnswer, err := strconv.ParseInt(message.Body, 10, 32)
+	userAnswer, err := strconv.ParseInt(answer[len(answer)-1], 10, 32)
 	if err != nil {
 		return false
 	}
